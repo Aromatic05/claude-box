@@ -1,0 +1,19 @@
+[Unit]
+Description=Isolated Claude development Podman environment with Xray TUN and SSH
+Documentation=file:%h/Applications/OwnProject/claude-netns/README.md
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=%h/Applications/OwnProject/claude-netns
+ExecStart=%h/Applications/OwnProject/claude-netns/ssh-service.sh
+ExecStop=/usr/bin/env CLAUDE_NETNS_FROM_SYSTEMD=1 %h/Applications/OwnProject/claude-netns/stop.sh
+SuccessExitStatus=143
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=45s
+KillMode=control-group
+
+[Install]
+WantedBy=default.target

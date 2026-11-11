@@ -1,0 +1,27 @@
+# Live container state, user data and generated diagnostics.
+/home/
+/runtime/
+/logs/
+/diagnostics/
+/var/
+/research/
+
+# Local configuration and machine-specific credentials.
+/xray-tun.json*
+!/xray-tun.json.example
+/mounts.conf*
+!/mounts.conf.example
+/ssh_known_hosts
+/.env
+/.env.*
+
+# Compiled Xray and local build output.
+/xray
+/build/
+
+# Editor and Python temporary files.
+__pycache__/
+*.py[cod]
+*.swp
+*.swo
+*~

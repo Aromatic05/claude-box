@@ -1,0 +1,31 @@
+diff --git a/proxy/tun/tun_linux.go b/proxy/tun/tun_linux.go
+index 970cb4c..50bf505 100644
+--- a/proxy/tun/tun_linux.go
++++ b/proxy/tun/tun_linux.go
+@@ -6,6 +6,7 @@ import (
+ 	"context"
+ 	"net"
+ 	"net/netip"
++	"os"
+ 	"os/exec"
+ 	"strconv"
+ 	"sync"
+@@ -285,7 +286,18 @@ func openFromEnv(expectedName string) (int, int, netlink.Link, bool, error) {
+ 		return -1, 0, nil, true, errors.New("invalid ", platform.TunFdKey, ": TUN device name ", actualName, " does not match configured name ", expectedName)
+ 	}
+ 
++	// External TUN FDs can belong to a different network namespace. The
++	// process supplying the FD must also provide the validated link index from
++	// that namespace; setns() is not available to a rootless host process.
+ 	tunLink, err := netlink.LinkByName(actualName)
++	if err != nil && os.Getenv("XRAY_TUN_IFINDEX") != "" {
++		index, parseErr := strconv.Atoi(os.Getenv("XRAY_TUN_IFINDEX"))
++		if parseErr != nil || index <= 0 {
++			return -1, 0, nil, true, errors.New("invalid XRAY_TUN_IFINDEX")
++		}
++		tunLink = &netlink.Tuntap{LinkAttrs: netlink.LinkAttrs{Name: actualName, Index: index}}
++		err = nil
++	}
+ 	if err != nil {
+ 		return -1, 0, nil, true, err
+ 	}

@@ -1,0 +1,4 @@
+# Format: container-directory:host-directory
+# Both mountpoint and host source must be owned by UID:GID 1000:1000.
+#
+# /workspace/grub:/home/aromatic/Applications/OwnProject/grub_port
