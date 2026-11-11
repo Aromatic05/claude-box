@@ -152,6 +152,7 @@ previous_ns="$(cat "$RUNTIME/bridge.netns" 2>/dev/null || true)"
 if is_our_bridge "$bridge_pid" && is_our_xray "$xray_pid" &&
    [[ "$previous_ns" == "$netns" ]] && tun_ready; then
   "$WORKDIR/mount.sh" apply
+  "$WORKDIR/gui.sh" restore || echo 'Wayland socket restore failed; network gateway is unaffected.' >&2
   echo "Dedicated Xray already running (PID $xray_pid, NetNS $netns)."
   exit 0
 fi
@@ -234,5 +235,6 @@ if ! tun_ready; then
   exit 1
 fi
 "$WORKDIR/mount.sh" apply
+"$WORKDIR/gui.sh" restore || echo 'Wayland socket restore failed; network gateway is unaffected.' >&2
 startup_cleanup_enabled=0
 printf 'Started %s with %s (Xray PID %s, NetNS %s).\n' "$CONTAINER" "$TUN" "$xray_pid" "$netns"

@@ -23,7 +23,7 @@ cd ~/Applications/OwnProject/claude-netns
 - IPv4: sole default route through `claude-tun` (`10.203.0.2/30`)
 - IPv6: unreachable default route
 - DNS: container `/etc/resolv.conf` uses `1.1.1.1`; its packets travel through the same TUN
-- Development container has no `NET_ADMIN`/`NET_RAW` or host sockets; dynamic mounts expose only explicitly configured host directories
+- Development container has no `NET_ADMIN`/`NET_RAW`; optional Wayland sharing exposes only the selected compositor socket, not the host session bus or runtime directory
 - Host-side Xray's only usable proxy outbound is the VLESS Reality endpoint configured in the local, untracked `xray-tun.json`
 
 ## Files
@@ -31,12 +31,44 @@ cd ~/Applications/OwnProject/claude-netns
 - `start.sh`: checks the Pod/network/mount isolation, creates or restores the TUN, starts the dedicated gateway
 - `enter.sh`: enters the development shell
 - `mount.sh` / `mounts.conf`: live host-directory bind mounts without recreating the container
+- `gui.sh`: optional dynamic sharing of the host Wayland socket, restricted to UID 1000
 - `build-xray.sh`: build the pinned Xray-core revision with the local patch into ignored `build/xray`
 - `xray`: dedicated Xray v26.10.31 binary, independent from `/usr/bin/xray`
 - `xray-tun.json`: dedicated Xray config (contains sensitive proxy parameters; permission 0600)
 - `tun-bridge.py`: FD handoff and host-side Xray process supervision
 - `xray-core/`: corresponding source tree with the small external-TUN-FD interface-index compatibility change
 - `runtime/` and `logs/`: generated state and diagnostics
+
+## Wayland socket (optional)
+
+```sh
+./gui.sh enable
+./gui.sh status
+./gui.sh disable
+```
+
+`gui.sh enable` attaches only the active host Wayland socket (e.g.
+`/run/user/1000/wayland-1`) to `/run/user/1000/wayland-claude` in the
+running container. The mounted socket stays owned by UID:GID 1000:1000.
+No host D-Bus, PipeWire, PulseAudio, GPU devices or entire XDG runtime
+directory is mounted.
+
+`./enter.sh` supplies `XDG_RUNTIME_DIR=/run/user/1000` and
+`WAYLAND_DISPLAY=wayland-claude` when the socket is enabled and connected.
+SSH uses Fish as the default login shell, so `gui.sh` also manages
+`/home/claude/.config/fish/conf.d/claude-wayland.fish` to set these two
+variables automatically for new SSH sessions while the socket exists.
+For an SSH Fish shell opened before enabling the integration, run:
+
+```fish
+source ~/.config/fish/conf.d/claude-wayland.fish
+```
+
+The enabled setting and socket identity are stored in
+`runtime/wayland.enabled` and `runtime/wayland.state` (ignored by Git). `start.sh`
+restores the Wayland bind after container restarts, and `enter.sh`
+refreshes it after compositor socket replacement. If no Wayland session is
+available at service startup, networking continues without GUI integration.
 
 ## Source control and Xray build
 
