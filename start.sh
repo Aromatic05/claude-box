@@ -119,6 +119,33 @@ read_pid() {
   if [[ -f "$1" ]]; then cat "$1"; fi
 }
 
+startup_cleanup_enabled=0
+startup_cleanup() {
+  local status="$?"
+  local bridge_pid xray_pid
+  trap - EXIT
+  if (( status == 0 || startup_cleanup_enabled == 0 )); then
+    exit "$status"
+  fi
+
+  bridge_pid="$(read_pid "$RUNTIME/bridge.pid")"
+  xray_pid="$(read_pid "$RUNTIME/xray.pid")"
+  if is_running "$bridge_pid" && is_our_bridge "$bridge_pid"; then
+    kill -TERM "$bridge_pid" 2>/dev/null || true
+    for ((n=0; n<60; n++)); do
+      is_running "$bridge_pid" || break
+      sleep 0.1
+    done
+  fi
+  if is_running "$xray_pid" && is_our_xray "$xray_pid"; then
+    kill -TERM "$xray_pid" 2>/dev/null || true
+  fi
+  rm -f "$RUNTIME/bridge.pid" "$RUNTIME/xray.pid" \
+        "$RUNTIME/bridge.netns" "$RUNTIME/tunfd.sock"
+  exit "$status"
+}
+trap startup_cleanup EXIT
+
 bridge_pid="$(read_pid "$RUNTIME/bridge.pid")"
 xray_pid="$(read_pid "$RUNTIME/xray.pid")"
 previous_ns="$(cat "$RUNTIME/bridge.netns" 2>/dev/null || true)"
@@ -166,6 +193,7 @@ rm -f "$RUNTIME/bridge.pid" "$RUNTIME/xray.pid" "$RUNTIME/bridge.netns" "$RUNTIM
 cp "$BRIDGE" "$RUNTIME/helper.py"
 chmod 644 "$RUNTIME/helper.py"
 
+startup_cleanup_enabled=1
 setsid python3 "$BRIDGE" serve \
   --socket "$RUNTIME/tunfd.sock" --name "$TUN" --expected-ns "$netns" \
   --namespace-pid "$infra_pid" --config "$CONFIG" --runtime "$RUNTIME" \
@@ -206,4 +234,5 @@ if ! tun_ready; then
   exit 1
 fi
 "$WORKDIR/mount.sh" apply
+startup_cleanup_enabled=0
 printf 'Started %s with %s (Xray PID %s, NetNS %s).\n' "$CONTAINER" "$TUN" "$xray_pid" "$netns"
