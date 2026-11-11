@@ -6,11 +6,11 @@ A dedicated, rootless Podman development container with a separate network names
 
 ```sh
 cd ~/Applications/OwnProject/claude-netns
-./start.sh
+./control.sh start
 ./enter.sh
 ```
 
-`start.sh` starts the existing `claude-private-netns` Pod and `claude-dev-isolated` container, re-creates the named `claude-tun` if necessary, and starts the **local `./xray` binary** in the host network namespace. The short-lived helper opens the TUN in the isolated namespace and passes its FD and interface index to the host-side Xray through a Unix socket. Re-running `start.sh` reuses a healthy running gateway; a Pod/namespace restart is handled by replacing the previous dedicated gateway.
+`control.sh start` starts the existing `claude-private-netns` Pod and `claude-dev-isolated` container, re-creates the named `claude-tun` if necessary, and starts the **local `./xray` binary** in the host network namespace. The short-lived helper opens the TUN in the isolated namespace and passes its FD and interface index to the host-side Xray through a Unix socket. Re-running `control.sh start` reuses a healthy running gateway; a Pod/namespace restart is handled by replacing the previous dedicated gateway.
 
 `enter.sh` opens a normal Bash session in `/home/claude`. The container user is `aromatic` (UID 1000), with passwordless sudo configured *inside this container only* (`sudo -n id`).
 
@@ -28,12 +28,10 @@ cd ~/Applications/OwnProject/claude-netns
 
 ## Files
 
-- `start.sh`: checks the Pod/network/mount isolation, creates or restores the TUN, starts the dedicated gateway
-- `enter.sh`: enters the development shell
-- `mount.sh` / `mounts.conf`: live host-directory bind mounts without recreating the container
-- `gui.sh`: optional dynamic sharing of the host Wayland socket, restricted to UID 1000
-- `kvm.sh`: optional dynamic access to the host `/dev/kvm` from UID 1000
-- `build-xray.sh`: build the pinned Xray-core revision with the local patch into ignored `build/xray`
+- `control.sh`: the only control entrypoint (start/stop, mounts, Wayland, KVM, SSH service, Xray build)
+- `enter.sh`: the only container-entry shell script
+- `claude_netns/`: Python implementation shared by both entrypoints
+- `mounts.conf`: configurable live host-directory bind mounts without recreating the container
 - `xray`: dedicated Xray v26.10.31 binary, independent from `/usr/bin/xray`
 - `xray-tun.json`: dedicated Xray config (contains sensitive proxy parameters; permission 0600)
 - `tun-bridge.py`: FD handoff and host-side Xray process supervision
@@ -43,12 +41,12 @@ cd ~/Applications/OwnProject/claude-netns
 ## Wayland socket (optional)
 
 ```sh
-./gui.sh enable
-./gui.sh status
-./gui.sh disable
+./control.sh wayland enable
+./control.sh wayland status
+./control.sh wayland disable
 ```
 
-`gui.sh enable` attaches only the active host Wayland socket (e.g.
+`control.sh wayland enable` attaches only the active host Wayland socket (e.g.
 `/run/user/1000/wayland-1`) to `/run/user/1000/wayland-claude` in the
 running container. The mounted socket stays owned by UID:GID 1000:1000.
 No host D-Bus, PipeWire, PulseAudio, GPU devices or entire XDG runtime
@@ -56,7 +54,7 @@ directory is mounted.
 
 `./enter.sh` supplies `XDG_RUNTIME_DIR=/run/user/1000` and
 `WAYLAND_DISPLAY=wayland-claude` when the socket is enabled and connected.
-SSH uses Fish as the default login shell, so `gui.sh` also manages
+SSH uses Fish as the default login shell, so the Python Wayland controller also manages
 `/home/claude/.config/fish/conf.d/claude-wayland.fish` to set these two
 variables automatically for new SSH sessions while the socket exists.
 For an SSH Fish shell opened before enabling the integration, run:
@@ -66,7 +64,7 @@ source ~/.config/fish/conf.d/claude-wayland.fish
 ```
 
 The enabled setting and socket identity are stored in
-`runtime/wayland.enabled` and `runtime/wayland.state` (ignored by Git). `start.sh`
+`runtime/wayland.enabled` and `runtime/wayland.state` (ignored by Git). `control.sh start`
 restores the Wayland bind after container restarts, and `enter.sh`
 refreshes it after compositor socket replacement. If no Wayland session is
 available at service startup, networking continues without GUI integration.
@@ -78,16 +76,16 @@ running the guest process as root. Only `/dev/kvm` is shared; this does not
 expose other host devices or enable privileged container mode.
 
 ```sh
-./kvm.sh enable
-./kvm.sh status
-./kvm.sh disable
+./control.sh kvm enable
+./control.sh kvm status
+./control.sh kvm disable
 ```
 
 `enable` dynamically attaches the host character device to `/dev/kvm`
 inside the container and verifies `KVM_GET_API_VERSION` and `KVM_CREATE_VM`
 as container UID 1000. Both the opt-in setting and mount identity live in
 `runtime/kvm.enabled` and `runtime/kvm.state` (ignored by Git).
-`start.sh` restores the device after the container is restarted. `disable`
+`control.sh start` restores the device after the container is restarted. `disable`
 unmounts the device and removes its container-local placeholder.
 
 To check acceleration once enabled:
@@ -119,10 +117,10 @@ no working credentials. To build without changing the submodule or overwriting
 the currently running Xray executable:
 
 ```sh
-./build-xray.sh
+./control.sh build-xray
 ```
 
-The script checks the submodule gitlink, exports that exact upstream commit,
+The controller checks the submodule gitlink, exports that exact upstream commit,
 applies the project patch in an ignored temporary directory, and produces
 `build/xray`. Deploy the new binary separately when appropriate. The live
 `./xray`, `xray-tun.json`, `mounts.conf`, `home/`, runtime data, diagnostic
@@ -140,20 +138,20 @@ Add entries to `mounts.conf`, one per line, using **container path:host path**:
 
 Only existing host directories owned by UID:GID `1000:1000` may be mounted.
 The container's UID `1000` remains the owner of these directories, and new
-container mountpoints are created as UID:GID `1000:1000`. `mount.sh` never
+container mountpoints are created as UID:GID `1000:1000`. The controller never
 changes file ownership. Nested files keep their existing host ownership.
 
 ```sh
-./mount.sh apply
-./mount.sh list
-./mount.sh remove /workspace/grub
-./mount.sh remove-all
+./control.sh mount apply
+./control.sh mount list
+./control.sh mount remove /workspace/grub
+./control.sh mount remove-all
 ```
 
-Mounts become visible to the running container immediately, and `start.sh`
+Mounts become visible to the running container immediately, and `control.sh start`
 reapplies the configuration after container restarts. Unmount before removing
 a line from `mounts.conf`; only mounts still matching their configured source
-may be removed by this script. New mountpoints must be empty and owned by UID
+may be removed by the controller. New mountpoints must be empty and owned by UID
 1000, and unrelated mounts are never replaced.
 
 ## Fail-closed
@@ -166,7 +164,7 @@ To stop only the isolated environment:
 podman pod stop claude-private-netns
 ```
 
-Then use `./start.sh` to restore its namespace, TUN and gateway. This Pod is not configured for autostart and should never be switched to `--network host`, pasta or bridge unless you intentionally redesign the isolation.
+Then use `./control.sh start` to restore its namespace, TUN and gateway. This Pod is not configured for autostart and should never be switched to `--network host`, pasta or bridge unless you intentionally redesign the isolation.
 
 ## SSH access from the local network
 
@@ -205,7 +203,7 @@ systemctl --user restart claude-netns.service
 journalctl --user -u claude-netns.service -n 30 --no-pager
 ```
 
-`./stop.sh` delegates to systemd when the service is running, so the LAN SSH
-listener stops along with the gateway. `./start.sh` remains available to start
+`./control.sh stop` delegates to systemd when the service is running, so the LAN SSH
+listener stops along with the gateway. `./control.sh start` remains available to start
 the network portion manually; use `systemctl --user start claude-netns.service`
 for the complete environment including SSH.

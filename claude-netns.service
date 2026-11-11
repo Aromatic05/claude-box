@@ -6,8 +6,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 WorkingDirectory=%h/Applications/OwnProject/claude-netns
-ExecStart=%h/Applications/OwnProject/claude-netns/ssh-service.sh
-ExecStop=/usr/bin/env CLAUDE_NETNS_FROM_SYSTEMD=1 %h/Applications/OwnProject/claude-netns/stop.sh
+ExecStart=%h/Applications/OwnProject/claude-netns/control.sh serve
+ExecStop=/usr/bin/env CLAUDE_NETNS_FROM_SYSTEMD=1 %h/Applications/OwnProject/claude-netns/control.sh stop
 SuccessExitStatus=143
 Restart=on-failure
 RestartSec=5s
