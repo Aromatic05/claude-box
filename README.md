@@ -32,6 +32,7 @@ cd ~/Applications/OwnProject/claude-netns
 - `enter.sh`: enters the development shell
 - `mount.sh` / `mounts.conf`: live host-directory bind mounts without recreating the container
 - `gui.sh`: optional dynamic sharing of the host Wayland socket, restricted to UID 1000
+- `kvm.sh`: optional dynamic access to the host `/dev/kvm` from UID 1000
 - `build-xray.sh`: build the pinned Xray-core revision with the local patch into ignored `build/xray`
 - `xray`: dedicated Xray v26.10.31 binary, independent from `/usr/bin/xray`
 - `xray-tun.json`: dedicated Xray config (contains sensitive proxy parameters; permission 0600)
@@ -69,6 +70,32 @@ The enabled setting and socket identity are stored in
 restores the Wayland bind after container restarts, and `enter.sh`
 refreshes it after compositor socket replacement. If no Wayland session is
 available at service startup, networking continues without GUI integration.
+
+## KVM acceleration (optional)
+
+The existing Rootless Podman container can use KVM without recreating it or
+running the guest process as root. Only `/dev/kvm` is shared; this does not
+expose other host devices or enable privileged container mode.
+
+```sh
+./kvm.sh enable
+./kvm.sh status
+./kvm.sh disable
+```
+
+`enable` dynamically attaches the host character device to `/dev/kvm`
+inside the container and verifies `KVM_GET_API_VERSION` and `KVM_CREATE_VM`
+as container UID 1000. Both the opt-in setting and mount identity live in
+`runtime/kvm.enabled` and `runtime/kvm.state` (ignored by Git).
+`start.sh` restores the device after the container is restarted. `disable`
+unmounts the device and removes its container-local placeholder.
+
+To check acceleration once enabled:
+
+```sh
+podman exec --user 1000:1000 claude-dev-isolated sh -c \
+  'printf "info kvm\nquit\n" | qemu-system-x86_64 -machine q35,accel=kvm -m 128 -smp 1 -nodefaults -display none -monitor stdio -S'
+```
 
 ## Source control and Xray build
 
