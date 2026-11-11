@@ -1,0 +1,41 @@
+# Copy this to config.toml, fill in the VLESS Reality share URL,
+# and restrict the file to mode 0600. Never commit the real URL.
+[container]
+pod = "claude-private-netns"
+name = "claude-dev-isolated"
+uid = 1000
+gid = 1000
+home = "/home/claude"
+
+[network]
+tun = "claude-tun"
+address = "10.203.0.2/30"
+mtu = 1500
+dns = ["1.1.1.1"]
+
+[ssh]
+listen_address = "192.168.50.200"
+listen_port = 22222
+guest_address = "127.0.0.1"
+guest_port = 22022
+
+[wayland]
+display = "wayland-claude"
+
+[kvm]
+device = "/dev/kvm"
+
+[images]
+arch = "docker.io/library/archlinux:latest"
+python = "docker.io/library/python:3.12-slim"
+
+[xray]
+# Supports vless:// share links with TCP and Reality.
+# Fields such as pbk, sni, sid, fp, flow and spx come from this link.
+url = "vless://00000000-0000-0000-0000-000000000000@example.com:443?type=tcp&security=reality&encryption=none&flow=xtls-rprx-vision&sni=example.com&fp=chrome&pbk=YOUR_PUBLIC_KEY&sid=YOUR_SHORT_ID&spx=%2F"
+log_level = "info"
+
+# Add one or more mounts as needed:
+# [[mounts]]
+# source = "/home/user/my-project"
+# target = "/workspace/my-project"

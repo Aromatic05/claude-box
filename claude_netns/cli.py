@@ -4,14 +4,6 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .build import build_xray
-from .common import CONTAINER, ControlError, is_container_running
-from .gateway import start, stop
-from .mounts import mount_command
-from .resources import SingleMount, resource_command
-from .ssh import relay, serve
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="control.sh", description="claude-netns runtime controller")
     parser.add_argument(
@@ -27,6 +19,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in ("start", "stop", "serve", "relay", "status", "build-xray"):
         if args.action is not None or args.target is not None:
             parser.error(f"{args.command} takes no arguments")
+    from .build import build_xray
+    from .common import CONTAINER, is_container_running
+    from .gateway import start, stop
+    from .mounts import mount_command
+    from .resources import SingleMount, resource_command
+    from .ssh import relay, serve
     if args.command == "start":
         start()
     elif args.command == "stop":
@@ -56,6 +54,6 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (ControlError, OSError) as error:
+    except (RuntimeError, ValueError, OSError) as error:
         print(f"control.sh: {error}", file=sys.stderr)
         sys.exit(1)

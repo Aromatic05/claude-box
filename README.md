@@ -18,22 +18,23 @@ cd ~/Applications/OwnProject/claude-netns
 
 - Pod: `claude-private-netns`, `--network none` (no pasta/bridge/host underlay)
 - Container: `claude-dev-isolated` (`archlinux:latest`), Rootless Podman
-- Only permanent Podman bind mount: `./home` -> `/home/claude`; optional dynamic bind mounts are configured in `mounts.conf`
+- Only permanent Podman bind mount: `./home` -> `/home/claude`; optional dynamic bind mounts are configured in `config.toml`
 - Separate NetNS: loopback and `claude-tun` only
 - IPv4: sole default route through `claude-tun` (`10.203.0.2/30`)
 - IPv6: unreachable default route
 - DNS: container `/etc/resolv.conf` uses `1.1.1.1`; its packets travel through the same TUN
 - Development container has no `NET_ADMIN`/`NET_RAW`; optional Wayland sharing exposes only the selected compositor socket, not the host session bus or runtime directory
-- Host-side Xray's only usable proxy outbound is the VLESS Reality endpoint configured in the local, untracked `xray-tun.json`
+- Host-side Xray's only usable proxy outbound is the VLESS Reality share URL in the local, untracked `config.toml`
 
 ## Files
 
 - `control.sh`: the only control entrypoint (start/stop, mounts, Wayland, KVM, SSH service, Xray build)
 - `enter.sh`: the only container-entry shell script
 - `claude_netns/`: Python implementation shared by both entrypoints
-- `mounts.conf`: configurable live host-directory bind mounts without recreating the container
+- `config.toml`: the only manually maintained runtime configuration (mode `0600`; contains the proxy share URL)
+- `config.toml.example`: public example of the configuration schema, with placeholder credentials
 - `xray`: dedicated Xray v26.10.31 binary, independent from `/usr/bin/xray`
-- `xray-tun.json`: dedicated Xray config (contains sensitive proxy parameters; permission 0600)
+- `runtime/xray.json`: generated dedicated Xray configuration (permission `0600`; never edit manually)
 - `tun-bridge.py`: FD handoff and host-side Xray process supervision
 - `xray-core/`: corresponding source tree with the small external-TUN-FD interface-index compatibility change
 - `runtime/` and `logs/`: generated state and diagnostics
@@ -108,13 +109,23 @@ Initialize the upstream source and local configuration after cloning:
 
 ```sh
 git submodule update --init
-cp xray-tun.json.example xray-tun.json
-cp mounts.conf.example mounts.conf
+cp config.toml.example config.toml
+chmod 600 config.toml
 ```
 
-Fill the Xray configuration with your own proxy settings; the examples contain
-no working credentials. To build without changing the submodule or overwriting
-the currently running Xray executable:
+Edit `config.toml` to set the container, TUN, DNS, SSH ports, mounts, and
+`[xray].url`. The URL must be a `vless://` share link for TCP + Reality,
+including its `sni`, `fp` and `pbk` query parameters. Other transports or
+unsupported parameters are rejected rather than ignored. Python reads this
+file with the standard-library `tomllib` module and generates
+`runtime/xray.json` automatically. This generated file keeps the same TUN
+inbound, fail-closed route and blackhole outbound as before.
+
+After changing the TOML, restart `claude-netns.service` to apply the SSH
+listener and proxy settings; `control.sh start` also detects Xray setting
+changes when used without the SSH service. The sample contains no working
+credentials. To build without changing the submodule or overwriting the
+currently running Xray executable:
 
 ```sh
 ./control.sh build-xray
@@ -123,17 +134,22 @@ the currently running Xray executable:
 The controller checks the submodule gitlink, exports that exact upstream commit,
 applies the project patch in an ignored temporary directory, and produces
 `build/xray`. Deploy the new binary separately when appropriate. The live
-`./xray`, `xray-tun.json`, `mounts.conf`, `home/`, runtime data, diagnostic
+`./xray`, `config.toml`, `home/`, runtime data, diagnostic
 files and logs are intentionally not committed. Existing installations keep
 using their current local executable and configuration.
 
 ## Dynamic host-directory mounts
 
-Add entries to `mounts.conf`, one per line, using **container path:host path**:
+Add `[[mounts]]` entries to `config.toml` using separate source/target fields:
 
-```text
-/workspace/grub:/home/aromatic/Applications/OwnProject/grub_port
-/workspace/work:/home/aromatic/Applications/WorkProject
+```toml
+[[mounts]]
+source = "/home/aromatic/Applications/OwnProject/grub_port"
+target = "/workspace/grub"
+
+[[mounts]]
+source = "/home/aromatic/Applications/WorkProject"
+target = "/workspace/work"
 ```
 
 Only existing host directories owned by UID:GID `1000:1000` may be mounted.
@@ -150,7 +166,7 @@ changes file ownership. Nested files keep their existing host ownership.
 
 Mounts become visible to the running container immediately, and `control.sh start`
 reapplies the configuration after container restarts. Unmount before removing
-a line from `mounts.conf`; only mounts still matching their configured source
+a `[[mounts]]` entry from `config.toml`; only mounts still matching their configured source
 may be removed by the controller. New mountpoints must be empty and owned by UID
 1000, and unrelated mounts are never replaced.
 
@@ -168,9 +184,9 @@ Then use `./control.sh start` to restore its namespace, TUN and gateway. This Po
 
 ## SSH access from the local network
 
-The user systemd service opens `192.168.50.200:22222` (TCP) and forwards each
+The user systemd service opens `192.168.50.200:22222` (TCP by default, configured under `[ssh]`) and forwards each
 connection over `podman exec` to an OpenSSH daemon listening only at
-`127.0.0.1:22022` **inside** the isolated Pod. The Pod remains `--network none`;
+`127.0.0.1:22022` (also from `[ssh]`) **inside** the isolated Pod. The Pod remains `--network none`;
 its normal outbound traffic still requires the host-side Xray TUN FD.
 
 ```sh

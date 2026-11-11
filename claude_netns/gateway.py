@@ -9,40 +9,42 @@ import sys
 import time
 from pathlib import Path
 
+from .config import settings
 from .common import (
     CONTAINER, LOGS, POD, ROOT, RUNTIME, ControlError, command,
     exec_in_container, guest, ns_id, output, podman, podman_output,
 )
 from .mounts import mount_command
 from .resources import SingleMount
+from .xray import XRAY_CONFIG, write_generated_config
 
-ARCH_IMAGE = "docker.io/library/archlinux:latest"
-PYTHON_IMAGE = "docker.io/library/python:3.12-slim"
-TUN = "claude-tun"
+ARCH_IMAGE = settings.images.arch
+PYTHON_IMAGE = settings.images.python
+TUN = settings.network.tun
 BRIDGE = ROOT / "tun-bridge.py"
 XRAY = ROOT / "xray"
-CONFIG = ROOT / "xray-tun.json"
+CONFIG = XRAY_CONFIG
 
 # The only shell executed for NetNS setup is the bounded command inside
 # the existing Arch helper image (which supplies iproute2, not Python).
 # It is kept byte-for-byte equivalent to the original network constraints.
-NET_SETUP = r"""
+NET_SETUP = f"""
 for device in $(ip -o link show | cut -d: -f2 | tr -d " " | cut -d@ -f1); do
-  case "$device" in lo|claude-tun) ;; *) echo "Unexpected network interface: $device" >&2; exit 1;; esac
+  case "$device" in lo|{TUN}) ;; *) echo "Unexpected network interface: $device" >&2; exit 1;; esac
 done
-if ip -4 route show default | grep -v "^default dev claude-tun "; then
+if ip -4 route show default | grep -v "^default dev {TUN} "; then
   echo "Unexpected IPv4 default route" >&2; exit 1
 fi
 if ip -6 route show default | grep -v "^unreachable default "; then
   echo "Unexpected IPv6 default route" >&2; exit 1
 fi
-if ! ip link show dev claude-tun >/dev/null 2>&1; then
-  ip tuntap add dev claude-tun mode tun user 1000
+if ! ip link show dev {TUN} >/dev/null 2>&1; then
+  ip tuntap add dev {TUN} mode tun user {settings.container.uid}
 fi
-ip -4 addr show dev claude-tun | grep -q "inet 10.203.0.2/30 " || \
-  ip -4 addr add 10.203.0.2/30 dev claude-tun
-ip link set dev claude-tun up
-ip -4 route replace default dev claude-tun
+ip -4 addr show dev {TUN} | grep -q "inet {settings.network.address} " || \
+  ip -4 addr add {settings.network.address} dev {TUN}
+ip link set dev {TUN} mtu {settings.network.mtu} up
+ip -4 route replace default dev {TUN}
 ip -6 route replace unreachable default metric 1
 """
 
@@ -81,6 +83,16 @@ def xray_owned(pid: int | None) -> bool:
         return False
     try:
         return os.readlink(f"/proc/{pid}/exe") == str(XRAY)
+    except OSError:
+        return False
+
+
+def uses_generated_config(pid: int | None) -> bool:
+    if not is_running(pid):
+        return False
+    try:
+        argv = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        return os.fsencode(CONFIG) in argv
     except OSError:
         return False
 
@@ -130,7 +142,7 @@ def check_existing_objects() -> str:
         or podman("container", "exists", CONTAINER, check=False).returncode
     ):
         raise ControlError("Dedicated Podman pod/container is missing; not creating or changing another one.")
-    for path in (BRIDGE, XRAY, CONFIG):
+    for path in (BRIDGE, XRAY):
         if not path.is_file():
             raise ControlError(f"Required gateway file is missing: {path}")
 
@@ -169,6 +181,8 @@ def ensure_netns(infra: str) -> tuple[str, int]:
 
 def start() -> None:
     infra = check_existing_objects()
+    changed = write_generated_config()
+    command(str(XRAY), "run", "-test", "-c", str(CONFIG))
     netns, infra_pid = ensure_netns(infra)
 
     podman(
@@ -176,7 +190,7 @@ def start() -> None:
         "--device", "/dev/net/tun", "--entrypoint", "/bin/sh",
         ARCH_IMAGE, "-ceu", NET_SETUP, capture=False,
     )
-    guest("ensure-resolver")
+    guest("ensure-resolver", *settings.network.dns)
     RUNTIME.mkdir(parents=True, exist_ok=True)
     LOGS.mkdir(parents=True, exist_ok=True)
     LOGS.chmod(0o700)
@@ -186,7 +200,14 @@ def start() -> None:
     xray_pid = read_pid(RUNTIME / "xray.pid")
     previous_ns = (RUNTIME / "bridge.netns").read_text().strip() if (RUNTIME / "bridge.netns").is_file() else ""
 
-    if bridge_owned(bridge_pid) and xray_owned(xray_pid) and previous_ns == netns and tun_ready():
+    if (
+        not changed
+        and bridge_owned(bridge_pid)
+        and xray_owned(xray_pid)
+        and uses_generated_config(xray_pid)
+        and previous_ns == netns
+        and tun_ready()
+    ):
         restore_mounts()
         print(f"Dedicated Xray already running (PID {xray_pid}, NetNS {netns}).")
         return

@@ -5,12 +5,15 @@ import os
 import subprocess
 from pathlib import Path
 
+from .config import settings
+
 ROOT = Path(__file__).resolve().parent.parent
 RUNTIME = ROOT / "runtime"
 LOGS = ROOT / "logs"
-CONTAINER = "claude-dev-isolated"
-POD = "claude-private-netns"
-UID = GID = 1000
+CONTAINER = settings.container.name
+POD = settings.container.pod
+UID = settings.container.uid
+GID = settings.container.gid
 
 
 class ControlError(RuntimeError):
@@ -58,7 +61,7 @@ def exec_in_container(*args: str, user: str | None = None,
 
 def guest(operation: str, *args: str, user: str = "0") -> str:
     source = (Path(__file__).parent / "guest.py").read_text()
-    return exec_in_container("python3", "-", operation, *args,
+    return exec_in_container("python3", "-", str(UID), str(GID), operation, *args,
                              user=user, input_text=source).stdout.strip()
 
 

@@ -7,10 +7,9 @@
 /research/
 
 # Local configuration and machine-specific credentials.
+/config.toml
 /xray-tun.json*
-!/xray-tun.json.example
 /mounts.conf*
-!/mounts.conf.example
 /ssh_known_hosts
 /.env
 /.env.*

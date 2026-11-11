@@ -7,6 +7,7 @@ import stat
 import sys
 from pathlib import Path
 
+from .config import settings
 from .common import (
     CONTAINER, GID, ROOT, RUNTIME, UID, ControlError, command, container_exists,
     container_file_id, container_pid, container_stat, enable_flag, file_id, guest,
@@ -14,15 +15,15 @@ from .common import (
     output, remove_state, saved_state, unmount_from_container,
 )
 
-WAYLAND_TARGET = "/run/user/1000/wayland-claude"
-KVM_TARGET = "/dev/kvm"
+WAYLAND_TARGET = f"{settings.wayland.runtime_dir}/{settings.wayland.display}"
+KVM_TARGET = settings.kvm.device
 FISH_CONFIG = ROOT / "home/.config/fish/conf.d/claude-wayland.fish"
 FISH_MARKER = "# Managed by claude-netns"
 FISH_CONTENT = f"""\
 {FISH_MARKER}
 if test -S {WAYLAND_TARGET}
-    set -gx XDG_RUNTIME_DIR /run/user/1000
-    set -gx WAYLAND_DISPLAY wayland-claude
+    set -gx XDG_RUNTIME_DIR {settings.wayland.runtime_dir}
+    set -gx WAYLAND_DISPLAY {settings.wayland.display}
 end
 """
 
@@ -38,7 +39,7 @@ def active_wayland_socket() -> Path:
     for name in names:
         if not re.fullmatch(r"wayland-[0-9]+", name):
             continue
-        path = Path(f"/run/user/{UID}/{name}")
+        path = Path(f"{settings.wayland.runtime_dir}/{name}")
         try:
             source = path.stat()
         except FileNotFoundError:
@@ -46,9 +47,9 @@ def active_wayland_socket() -> Path:
         if not stat.S_ISSOCK(source.st_mode):
             continue
         if (source.st_uid, source.st_gid) != (UID, GID):
-            raise ControlError("Host Wayland socket must belong to UID:GID 1000:1000")
+            raise ControlError(f"Host Wayland socket must belong to UID:GID {UID}:{GID}")
         return path
-    raise ControlError("No active Wayland socket found for UID 1000")
+    raise ControlError(f"No active Wayland socket found for UID {UID}")
 
 
 def host_kvm() -> Path:
@@ -102,9 +103,9 @@ class SingleMount:
             print(f"{self.kind.upper() if self.kind == 'kvm' else 'Wayland socket'} integration is disabled.")
         elif self.ready():
             if self.kind == "kvm":
-                print("KVM connected at /dev/kvm (UID 1000).")
+                print(f"KVM connected at {KVM_TARGET} (UID {UID}).")
             else:
-                print(f"Wayland socket connected at {self.target} (UID 1000).")
+                print(f"Wayland socket connected at {self.target} (UID {UID}).")
         else:
             print(f"{self.kind.upper() if self.kind == 'kvm' else 'Wayland socket'} integration is enabled but not currently connected.")
 
@@ -112,7 +113,7 @@ class SingleMount:
         if not mounted_at(self.target) or container_file_id(self.target) != source_identity:
             return False
         if self.kind == "wayland":
-            return container_stat(self.target, "%u:%g") == "1000:1000"
+            return container_stat(self.target, "%u:%g") == f"{UID}:{GID}"
         return container_stat(self.target, "%t:%T") == "a:e8"
 
     def attach(self) -> None:
@@ -126,7 +127,7 @@ class SingleMount:
                 raise ControlError(f"Existing mount at {self.target} is not managed by claude-netns")
             if container_file_id(self.target) == source_identity:
                 if self.kind == "kvm":
-                    print("KVM already connected: /dev/kvm (container UID 1000)")
+                    print(f"KVM already connected: {KVM_TARGET} (container UID {UID})")
                 else:
                     print(f"Wayland socket already connected: {self.target} <- {source}")
                 return
@@ -134,13 +135,16 @@ class SingleMount:
         elif container_exists(self.target) and not self.state.is_file():
             raise ControlError(f"Existing path {self.target} is not managed by claude-netns")
 
-        guest("prepare-socket" if self.kind == "wayland" else "prepare-kvm", self.target)
+        if self.kind == "wayland":
+            guest("prepare-socket", self.target, settings.wayland.runtime_dir)
+        else:
+            guest("prepare-kvm", self.target)
         mount_into_container(pid, str(source), self.target, "socket" if self.kind == "wayland" else "char")
         try:
             if not self._verify(source_identity):
                 raise ControlError(f"{self.kind} mount identity verification failed")
             if self.kind == "kvm":
-                print(guest("verify-kvm", user="1000:1000"))
+                print(guest("verify-kvm", self.target, user=settings.container.user))
         except Exception:
             if mounted_at(self.target):
                 unmount_from_container(pid, self.target)
@@ -149,9 +153,9 @@ class SingleMount:
 
         managed_state(self.flag, self.state, ns, source_identity)
         if self.kind == "kvm":
-            print("KVM connected: /dev/kvm (UID 1000, API and VM creation verified).")
+            print(f"KVM connected: {KVM_TARGET} (UID {UID}, API and VM creation verified).")
         else:
-            print(f"Wayland socket connected: {self.target} <- {source} (UID 1000)")
+            print(f"Wayland socket connected: {self.target} <- {source} (UID {UID})")
 
     def enable(self) -> None:
         self.attach()
@@ -197,7 +201,7 @@ def install_fish_config() -> None:
         current = FISH_CONFIG.read_text()
         if not current.splitlines() or not current.splitlines()[0].startswith(FISH_MARKER):
             raise ControlError(f"Existing Fish config is not managed by claude-netns: {FISH_CONFIG}")
-        if current.splitlines()[1:] == FISH_CONTENT.splitlines()[1:] and current != FISH_CONTENT:
+        if current != FISH_CONTENT:
             FISH_CONFIG.write_text(FISH_CONTENT)
         return
     FISH_CONFIG.parent.mkdir(parents=True, exist_ok=True)

@@ -135,7 +135,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('operation', choices=('send', 'serve'))
     ap.add_argument('--socket', required=True)
-    ap.add_argument('--name', default='claude-tun')
+    ap.add_argument('--name', required=True)
     ap.add_argument('--expected-ns')
     ap.add_argument('--config')
     ap.add_argument('--runtime')

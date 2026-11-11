@@ -5,10 +5,12 @@ The source is passed over stdin; this file is not bind-mounted into the containe
 import fcntl
 import os
 import pathlib
+import re
+import signal
 import stat
 import sys
 
-UID = GID = 1000
+UID = GID = 0
 
 
 def ensure_file(target):
@@ -42,8 +44,8 @@ def prepare_dir(target):
         raise RuntimeError(f"Destination is not empty: {current}")
 
 
-def prepare_socket(target):
-    runtime = pathlib.Path("/run/user/1000")
+def prepare_socket(target, runtime_path):
+    runtime = pathlib.Path(runtime_path)
     if runtime.is_symlink():
         raise RuntimeError(f"Refusing symlink at {runtime}")
     if not runtime.exists():
@@ -65,8 +67,8 @@ def remove_placeholder(target):
             path.unlink()
 
 
-def verify_kvm():
-    fd = os.open("/dev/kvm", os.O_RDWR | os.O_CLOEXEC)
+def verify_kvm(device):
+    fd = os.open(device, os.O_RDWR | os.O_CLOEXEC)
     try:
         version = fcntl.ioctl(fd, 0xAE00, 0)
         if version != 12:
@@ -78,15 +80,55 @@ def verify_kvm():
         os.close(fd)
 
 
-def ensure_resolver():
+def ensure_resolver(*dns):
     path = pathlib.Path("/etc/resolv.conf")
-    if not path.exists():
-        path.write_text("nameserver 1.1.1.1\noptions timeout:2 attempts:2\n")
+    if path.is_symlink():
+        raise RuntimeError("Refusing to replace a symlinked /etc/resolv.conf")
+    content = "".join(f"nameserver {address}\n" for address in dns) + "options timeout:2 attempts:2\n"
+    if not path.exists() or path.read_text() != content:
+        path.write_text(content)
         path.chmod(0o644)
 
 
+SSHD_CONFIG = pathlib.Path("/etc/ssh/sshd_config_claude")
+SSHD_PID = pathlib.Path("/run/sshd-claude.pid")
+
+
+def configure_sshd(port, address):
+    text = SSHD_CONFIG.read_text()
+    for directive, value in (("Port", port), ("ListenAddress", address)):
+        pattern = rf"(?m)^{directive} .*$"
+        if len(re.findall(pattern, text)) != 1:
+            raise RuntimeError(f"Expected one {directive} directive in dedicated sshd config")
+        text = re.sub(pattern, f"{directive} {value}", text, count=1)
+    if text == SSHD_CONFIG.read_text():
+        print("unchanged")
+        return
+    SSHD_CONFIG.write_text(text)
+    print("changed")
+
+
+def reload_sshd():
+    if not SSHD_PID.is_file():
+        return
+    pid = int(SSHD_PID.read_text().strip())
+    process = pathlib.Path(f"/proc/{pid}/cmdline")
+    if not process.is_file():
+        return
+    cmdline = process.read_bytes()
+    executable = pathlib.Path(f"/proc/{pid}/exe").resolve()
+    if (
+        executable.name != "sshd"
+        or str(SSHD_CONFIG).encode() not in cmdline
+    ):
+        raise RuntimeError("Refusing to reload unrelated SSH process")
+    os.kill(pid, signal.SIGHUP)
+    print("reloaded")
+
+
 if __name__ == "__main__":
-    cmd, *args = sys.argv[1:]
+    UID, GID = int(sys.argv[1]), int(sys.argv[2])
+    cmd, *args = sys.argv[3:]
     functions = {
         "prepare-dir": prepare_dir,
         "prepare-socket": prepare_socket,
@@ -94,6 +136,8 @@ if __name__ == "__main__":
         "remove-placeholder": remove_placeholder,
         "verify-kvm": verify_kvm,
         "ensure-resolver": ensure_resolver,
+        "configure-sshd": configure_sshd,
+        "reload-sshd": reload_sshd,
     }
     if cmd not in functions:
         raise RuntimeError(f"Unsupported container operation: {cmd}")

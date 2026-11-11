@@ -5,11 +5,12 @@ import os
 import re
 import time
 
-from .common import CONTAINER, LOGS, ROOT, ControlError, exec_in_container, output, podman
+from .common import CONTAINER, LOGS, ROOT, ControlError, exec_in_container, guest, output, podman
+from .config import settings
 from .gateway import start
 
-LISTEN_ADDRESS = "192.168.50.200"
-LISTEN_PORT = "22222"
+LISTEN_ADDRESS = settings.ssh.listen_address
+LISTEN_PORT = settings.ssh.listen_port
 
 
 def host_address_ready() -> bool:
@@ -22,7 +23,7 @@ def host_address_ready() -> bool:
 
 def sshd_listening() -> bool:
     sockets = exec_in_container("/usr/bin/ss", "-lnt").stdout
-    return bool(re.search(r"127\.0\.0\.1:22022\s", sockets))
+    return bool(re.search(rf"{re.escape(settings.ssh.guest_address)}:{settings.ssh.guest_port}\s", sockets))
 
 
 def serve() -> None:
@@ -33,7 +34,10 @@ def serve() -> None:
     if not host_address_ready():
         raise ControlError(f"LAN address {LISTEN_ADDRESS} is unavailable; refusing to start the isolated Pod.")
     start()
+    changed = guest("configure-sshd", str(settings.ssh.guest_port), settings.ssh.guest_address)
     exec_in_container("/usr/sbin/sshd", "-t", "-f", "/etc/ssh/sshd_config_claude", user="0")
+    if changed == "changed":
+        guest("reload-sshd")
     if not sshd_listening():
         podman(
             "exec", "--detach", "--user", "0", CONTAINER, "/usr/sbin/sshd",
@@ -44,7 +48,7 @@ def serve() -> None:
             break
         time.sleep(0.1)
     else:
-        raise ControlError("The isolated SSH daemon failed to listen on 127.0.0.1:22022.")
+        raise ControlError(f"The isolated SSH daemon failed to listen on {settings.ssh.guest_address}:{settings.ssh.guest_port}.")
 
     os.execv(
         "/usr/bin/socat",
@@ -61,7 +65,8 @@ def relay() -> None:
     os.execvp(
         "podman",
         [
-            "podman", "exec", "-i", "--user", "1000:1000",
-            CONTAINER, "/usr/bin/socat", "STDIO", "TCP:127.0.0.1:22022",
+            "podman", "exec", "-i", "--user", settings.container.user,
+            CONTAINER, "/usr/bin/socat", "STDIO",
+            f"TCP:{settings.ssh.guest_address}:{settings.ssh.guest_port}",
         ],
     )
