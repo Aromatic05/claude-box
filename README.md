@@ -1,225 +1,169 @@
-# claude-netns
+# Claude Box
 
-A dedicated, rootless Podman development container with a separate network namespace and a fail-closed transparent Xray Reality exit. This setup does not change host routes or the existing `xray-dae.service`.
+**把 Claude 放进独立容器里运行，减少它接触宿主机文件的机会，防止不相关的本机内容被意外读取或泄露。**
 
-## Run
+Claude 经常需要查看代码、执行命令、安装依赖。直接在日常使用的电脑上运行，它可能接触到与当前任务无关的文件、配置和凭据。
 
-```sh
-cd ~/Applications/OwnProject/claude-netns
+Claude Box 为 Claude 准备了一套独立的 Linux 开发环境：**Claude 在容器里工作，宿主机上的项目目录按需共享，网络访问走独立的代理出口。** 你仍然可以正常写代码、运行工具和使用终端，而不必把整个宿主机环境交给 Claude。
+
+## 有什么用？
+
+- **隔离文件访问**：使用 Rootless Podman 运行 Claude。容器拥有独立的家目录，只有你主动挂载的宿主目录才会额外开放给它。
+- **隔离网络**：容器拥有独立的网络命名空间，通过专用 Xray TUN 出网；代理不可用时，不会自动改走宿主机的普通网络连接。
+- **按需使用宿主能力**：需要图形程序时可以开启 Wayland，需要虚拟机加速时可以开启 KVM。不使用时可以关闭。
+- **保持开发体验**：可以在容器内使用 Claude、Git、编译工具和 SSH，项目文件也能按需挂载。
+- **一个配置文件**：端口、网络参数、目录挂载和 Xray 分享链接都写在 `config.toml` 中。
+
+> 请只共享愿意让 Claude 访问的项目目录。开启挂载或设备共享后，容器内的程序也会获得对应访问能力。
+
+## 快速开始
+
+目前项目管理的是**已经创建好的 Podman 容器及其网络环境**，不会自动创建新容器。需要 Linux、Rootless Podman、Python 3.11+，以及准备好的 Claude 开发容器和项目专用 Xray 可执行文件。
+
+### 1. 配置
+
+在项目目录执行：
+
+```bash
+cp config.toml.example config.toml
+chmod 600 config.toml
+```
+
+编辑 `config.toml`，至少将 `[xray]` 下的 `url` 换成自己的 **VLESS Reality 分享链接**，并根据本机实际情况修改 `[ssh]` 的监听地址、端口等参数。
+
+```toml
+[xray]
+url = "vless://UUID@server.example.com:443?type=tcp&security=reality&..."
+log_level = "info"
+```
+
+当前支持 VLESS + TCP + Reality。Claude Box 会根据链接自动生成 Xray 配置，**无需再维护一份独立的代理 JSON**。
+
+`config.toml` 含有连接凭据，默认不提交到 Git。
+
+### 2. 启动并进入容器
+
+```bash
 ./control.sh start
 ./enter.sh
 ```
 
-`control.sh start` starts the existing `claude-private-netns` Pod and `claude-dev-isolated` container, re-creates the named `claude-tun` if necessary, and starts the **local `./xray` binary** in the host network namespace. The short-lived helper opens the TUN in the isolated namespace and passes its FD and interface index to the host-side Xray through a Unix socket. Re-running `control.sh start` reuses a healthy running gateway; a Pod/namespace restart is handled by replacing the previous dedicated gateway.
+进入容器后，直接运行：
 
-`enter.sh` opens a normal Bash session in `/home/claude`. The container user is `aromatic` (UID 1000), with passwordless sudo configured *inside this container only* (`sudo -n id`).
+```bash
+claude
+```
 
-## Isolated objects
+`control.sh start` 负责启动或恢复隔离网络与代理；`enter.sh` 打开容器终端。
 
-- Pod: `claude-private-netns`, `--network none` (no pasta/bridge/host underlay)
-- Container: `claude-dev-isolated` (`archlinux:latest`), Rootless Podman
-- Only permanent Podman bind mount: `./home` -> `/home/claude`; optional dynamic bind mounts are configured in `config.toml`
-- Separate NetNS: loopback and `claude-tun` only
-- IPv4: sole default route through `claude-tun` (`10.203.0.2/30`)
-- IPv6: unreachable default route
-- DNS: container `/etc/resolv.conf` uses `1.1.1.1`; its packets travel through the same TUN
-- Development container has no `NET_ADMIN`/`NET_RAW`; optional Wayland sharing exposes only the selected compositor socket, not the host session bus or runtime directory
-- Host-side Xray's only usable proxy outbound is the VLESS Reality share URL in the local, untracked `config.toml`
+### 3. 查看状态或停止
 
-## Files
+```bash
+./control.sh status
+./control.sh stop
+```
 
-- `control.sh`: the only control entrypoint (start/stop, mounts, Wayland, KVM, SSH service, Xray build)
-- `enter.sh`: the only container-entry shell script
-- `claude_netns/`: Python implementation shared by both entrypoints
-- `config.toml`: the only manually maintained runtime configuration (mode `0600`; contains the proxy share URL)
-- `config.toml.example`: public example of the configuration schema, with placeholder credentials
-- `xray`: dedicated Xray v26.10.31 binary, independent from `/usr/bin/xray`
-- `runtime/xray.json`: generated dedicated Xray configuration (permission `0600`; never edit manually)
-- `tun-bridge.py`: FD handoff and host-side Xray process supervision
-- `xray-core/`: corresponding source tree with the small external-TUN-FD interface-index compatibility change
-- `runtime/` and `logs/`: generated state and diagnostics
+如果启用了项目自带的 systemd 用户服务，`stop` 会同时停止对应的 SSH 服务。
 
-## Wayland socket (optional)
+## 让 Claude 使用你的项目
 
-```sh
+默认不需要把整个宿主机家目录交给 Claude。只需在 `config.toml` 中添加希望开放的目录：
+
+```toml
+[[mounts]]
+source = "/home/user/projects/my-app"
+target = "/workspace/my-app"
+```
+
+配置后执行：
+
+```bash
+./control.sh mount apply
+./control.sh mount list
+```
+
+现在 Claude 就可以在容器内访问 `/workspace/my-app`。宿主机的其他目录不会因为添加这一条挂载而自动共享。
+
+不再需要时，可以卸载：
+
+```bash
+./control.sh mount remove /workspace/my-app
+```
+
+请先卸载，再从 `config.toml` 中删除对应的 `[[mounts]]` 配置。容器会在下次启动时恢复仍然配置的挂载。
+
+## 可选功能
+
+### 图形界面（Wayland）
+
+需要在容器里打开图形程序时：
+
+```bash
 ./control.sh wayland enable
 ./control.sh wayland status
 ./control.sh wayland disable
 ```
 
-`control.sh wayland enable` attaches only the active host Wayland socket (e.g.
-`/run/user/1000/wayland-1`) to `/run/user/1000/wayland-claude` in the
-running container. The mounted socket stays owned by UID:GID 1000:1000.
-No host D-Bus, PipeWire, PulseAudio, GPU devices or entire XDG runtime
-directory is mounted.
+开启后只共享选定的 Wayland socket，不会顺带共享整个宿主桌面会话、音频服务或 GPU 设备。新进入的容器终端会自动设置 Wayland 环境变量。
 
-`./enter.sh` supplies `XDG_RUNTIME_DIR=/run/user/1000` and
-`WAYLAND_DISPLAY=wayland-claude` when the socket is enabled and connected.
-SSH uses Fish as the default login shell, so the Python Wayland controller also manages
-`/home/claude/.config/fish/conf.d/claude-wayland.fish` to set these two
-variables automatically for new SSH sessions while the socket exists.
-For an SSH Fish shell opened before enabling the integration, run:
+### 虚拟机加速（KVM）
 
-```fish
-source ~/.config/fish/conf.d/claude-wayland.fish
-```
+需要在容器里运行使用 KVM 的 QEMU 时：
 
-The enabled setting and socket identity are stored in
-`runtime/wayland.enabled` and `runtime/wayland.state` (ignored by Git). `control.sh start`
-restores the Wayland bind after container restarts, and `enter.sh`
-refreshes it after compositor socket replacement. If no Wayland session is
-available at service startup, networking continues without GUI integration.
-
-## KVM acceleration (optional)
-
-The existing Rootless Podman container can use KVM without recreating it or
-running the guest process as root. Only `/dev/kvm` is shared; this does not
-expose other host devices or enable privileged container mode.
-
-```sh
+```bash
 ./control.sh kvm enable
 ./control.sh kvm status
 ./control.sh kvm disable
 ```
 
-`enable` dynamically attaches the host character device to `/dev/kvm`
-inside the container and verifies `KVM_GET_API_VERSION` and `KVM_CREATE_VM`
-as container UID 1000. Both the opt-in setting and mount identity live in
-`runtime/kvm.enabled` and `runtime/kvm.state` (ignored by Git).
-`control.sh start` restores the device after the container is restarted. `disable`
-unmounts the device and removes its container-local placeholder.
+这只向现有容器开放 `/dev/kvm`，不会把容器改成特权模式。
 
-To check acceleration once enabled:
+### 通过 SSH 进入
 
-```sh
-podman exec --user 1000:1000 claude-dev-isolated sh -c \
-  'printf "info kvm\nquit\n" | qemu-system-x86_64 -machine q35,accel=kvm -m 128 -smp 1 -nodefaults -display none -monitor stdio -S'
-```
+项目提供 `claude-netns.service` 用户服务，用于同时启动容器网络与 SSH 转发。部署好该 unit 后可以运行：
 
-## Source control and Xray build
-
-This project is a standalone Git repository. `xray-core/` is an upstream Git
-submodule pinned to Xray-core `v26.10.31` (commit
-`a4a3dff5b20c2faae567b742c172c7b95e75c083`). The root repository keeps
-the rootless external-TUN interface-index change separately in
-`patches/0001-xray-tun-external-ifindex.patch`. Do not commit that local change
-to the upstream submodule.
-
-Initialize the upstream source and local configuration after cloning:
-
-```sh
-git submodule update --init
-cp config.toml.example config.toml
-chmod 600 config.toml
-```
-
-Edit `config.toml` to set the container, TUN, DNS, SSH ports, mounts, and
-`[xray].url`. The URL must be a `vless://` share link for TCP + Reality,
-including its `sni`, `fp` and `pbk` query parameters. Other transports or
-unsupported parameters are rejected rather than ignored. Python reads this
-file with the standard-library `tomllib` module and generates
-`runtime/xray.json` automatically. This generated file keeps the same TUN
-inbound, fail-closed route and blackhole outbound as before.
-
-After changing the TOML, restart `claude-netns.service` to apply the SSH
-listener and proxy settings; `control.sh start` also detects Xray setting
-changes when used without the SSH service. The sample contains no working
-credentials. To build without changing the submodule or overwriting the
-currently running Xray executable:
-
-```sh
-./control.sh build-xray
-```
-
-The controller checks the submodule gitlink, exports that exact upstream commit,
-applies the project patch in an ignored temporary directory, and produces
-`build/xray`. Deploy the new binary separately when appropriate. The live
-`./xray`, `config.toml`, `home/`, runtime data, diagnostic
-files and logs are intentionally not committed. Existing installations keep
-using their current local executable and configuration.
-
-## Dynamic host-directory mounts
-
-Add `[[mounts]]` entries to `config.toml` using separate source/target fields:
-
-```toml
-[[mounts]]
-source = "/home/aromatic/Applications/OwnProject/grub_port"
-target = "/workspace/grub"
-
-[[mounts]]
-source = "/home/aromatic/Applications/WorkProject"
-target = "/workspace/work"
-```
-
-Only existing host directories owned by UID:GID `1000:1000` may be mounted.
-The container's UID `1000` remains the owner of these directories, and new
-container mountpoints are created as UID:GID `1000:1000`. The controller never
-changes file ownership. Nested files keep their existing host ownership.
-
-```sh
-./control.sh mount apply
-./control.sh mount list
-./control.sh mount remove /workspace/grub
-./control.sh mount remove-all
-```
-
-Mounts become visible to the running container immediately, and `control.sh start`
-reapplies the configuration after container restarts. Unmount before removing
-a `[[mounts]]` entry from `config.toml`; only mounts still matching their configured source
-may be removed by the controller. New mountpoints must be empty and owned by UID
-1000, and unrelated mounts are never replaced.
-
-## Fail-closed
-
-No `pasta` device or physical route exists in the container's namespace. When Xray exits, `claude-tun` loses carrier and IPv4/IPv6/DNS external connections fail; if the TUN is removed, its default route is removed too. The independent gateway must be running for network access. A temporary helper with `NET_ADMIN` is used only to initialize/reopen the TUN; the normal developer container cannot change its own network routes.
-
-To stop only the isolated environment:
-
-```sh
-podman pod stop claude-private-netns
-```
-
-Then use `./control.sh start` to restore its namespace, TUN and gateway. This Pod is not configured for autostart and should never be switched to `--network host`, pasta or bridge unless you intentionally redesign the isolation.
-
-## SSH access from the local network
-
-The user systemd service opens `192.168.50.200:22222` (TCP by default, configured under `[ssh]`) and forwards each
-connection over `podman exec` to an OpenSSH daemon listening only at
-`127.0.0.1:22022` (also from `[ssh]`) **inside** the isolated Pod. The Pod remains `--network none`;
-its normal outbound traffic still requires the host-side Xray TUN FD.
-
-```sh
-ssh -p 22222 aromatic@192.168.50.200
-```
-
-SSH authentication accepts **public keys only**. The container's
-`/home/claude/.ssh/authorized_keys` initially contains only the public key from
-the host's `~/.ssh/id_ed25519.pub`. The private key is never mounted or copied
-into the container. Password/keyboard-interactive authentication, root login,
-and SSH forwarding are disabled. To grant access to another client, explicitly
-add that client's trusted public key to `./home/.ssh/authorized_keys`.
-
-The pinned SSH **host** public key for port 22222 is saved in
-`./ssh_known_hosts` (not an authentication credential).
-
-## systemd user service
-
-`./claude-netns.service` is the source unit file. Its only external path is the
-required symlink at `~/.config/systemd/user/claude-netns.service`.
-The unit is enabled under `default.target` with user lingering already enabled.
-It starts the Pod, independent host-side `./xray`, container OpenSSH, and
-`192.168.50.200:22222` TCP relay, and stops them together.
-
-```sh
-systemctl --user status claude-netns.service
+```bash
 systemctl --user start claude-netns.service
-systemctl --user stop claude-netns.service
-systemctl --user restart claude-netns.service
-journalctl --user -u claude-netns.service -n 30 --no-pager
+systemctl --user status claude-netns.service
 ```
 
-`./control.sh stop` delegates to systemd when the service is running, so the LAN SSH
-listener stops along with the gateway. `./control.sh start` remains available to start
-the network portion manually; use `systemctl --user start claude-netns.service`
-for the complete environment including SSH.
+从其他设备连接时，使用 `config.toml` 中的 SSH 监听地址、端口，以及**容器内已有的用户名**：
+
+```bash
+ssh -p <监听端口> <容器用户名>@<宿主机地址>
+```
+
+将尖括号中的占位符替换成实际值。SSH 登录使用的是容器账户，不需要与宿主机用户名相同。容器内的 SSH 仅使用公钥认证，实际监听在独立网络命名空间的回环地址上，外部连接由宿主机转发。
+
+**注意**：当前 unit 中的工作目录仍对应原来的本地部署路径。如果移动了仓库目录，启用服务前需要同步调整 unit 的路径。
+
+## 常用命令
+
+| 想做什么 | 命令 |
+| --- | --- |
+| 启动或恢复容器网络 | `./control.sh start` |
+| 进入容器终端 | `./enter.sh` |
+| 查看状态 | `./control.sh status` |
+| 停止环境 | `./control.sh stop` |
+| 应用共享目录 | `./control.sh mount apply` |
+| 查看共享目录 | `./control.sh mount list` |
+| 关闭所有配置的动态挂载 | `./control.sh mount remove-all` |
+| 开启图形支持 | `./control.sh wayland enable` |
+| 开启 KVM | `./control.sh kvm enable` |
+| 构建项目专用 Xray | `./control.sh build-xray` |
+
+项目只有 `control.sh` 和 `enter.sh` 两个 Shell 入口，主要逻辑使用 Python 实现。
+
+## 数据保存在哪里？
+
+- `config.toml`：唯一需要手动维护的配置文件，包括代理分享链接。
+- `home/`：容器使用的家目录，文件保存在宿主机项目目录内。
+- `runtime/`：运行时状态，以及自动生成的 `runtime/xray.json`。
+- `logs/`：网关和 SSH 运行日志。
+- `config.toml.example`：不含真实凭据的配置模板。
+
+`config.toml`、`home/`、`runtime/`、`logs/` 等本地数据已排除在 Git 之外。Xray 构建产物位于 `build/xray`；构建命令不会直接替换正在运行的 `./xray`。
+
+---
+
+Claude Box 的目标很简单：**让 Claude 在自己的盒子里完成开发任务，只把必要的宿主资源交给它。**
